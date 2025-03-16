@@ -74,7 +74,8 @@ def extract_think(text):
 def extract_tool_call(text):
     """
     Extracts a function call block (wrapped in either ```tool_code or ```python)
-    from the text, executes it using exec(), and returns the output wrapped in a ```tool_output``` block.
+    from the text, executes it using exec(), and returns the output wrapped in
+    <pre><code class="hljs">...</code></pre> for syntax highlighting.
     """
     pattern = r"```(?:tool_code|python)\s*(.*?)\s*```"
     match = re.search(pattern, text, re.DOTALL)
@@ -85,32 +86,29 @@ def extract_tool_call(text):
             with redirect_stdout(f):
                 exec(code, globals())
             output = f.getvalue()
-            return f"```tool_output\n{output}\n```"
+            return f"<pre><code class='hljs'>{output}</code></pre>"
         except Exception as e:
-            return f"```tool_output\nError during execution: {str(e)}\n```"
+            return f"<pre><code class='hljs'>Error during execution: {str(e)}</code></pre>"
     return None
 
 # --- Example Function: IP Location Checker ---
-def get_ip_location(ip: str) -> dict:
+def get_ip_location(ip: str = None) -> dict:
     """
-    Get the location details of the given IP address using the ip-api.com service.
+    Get the location details of your public IP address using the ipconfig.io service.
     
-    Args:
-      ip: The IP address to look up.
-      
+    The function accepts an optional 'ip' parameter, but it is ignored.
+    It always retrieves your public IP automatically via ipconfig.io.
+    
     Returns:
-      A dictionary containing location information such as country, region, city, etc.
+      A dictionary containing location information (such as city, region, country, etc.).
       In case of an error, returns a dict with an "error" key.
     """
     import requests
     try:
-        url = f"http://ip-api.com/json/{ip}"
-        response = requests.get(url, timeout=5)
+        response = requests.get("https://ipconfig.io/json", timeout=5)
+        response.raise_for_status()
         data = response.json()
-        if data.get("status") == "success":
-            return data
-        else:
-            return {"error": data.get("message", "Unknown error occurred.")}
+        return data
     except Exception as e:
         return {"error": str(e)}
 
@@ -140,6 +138,12 @@ HTML_TEMPLATE = """
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Doto:wght@100..900&display=swap" rel="stylesheet">
+  <!-- Highlight.js CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script>hljs.highlightAll();</script>
+  <!-- Marked.js for markdown formatting -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     /* Universal Box Sizing and Body Flex Setup */
     html, body {
@@ -158,12 +162,7 @@ HTML_TEMPLATE = """
     textarea { box-sizing: border-box; }
     /* Utility classes */
     .br-1 { border-radius: 1rem; }
-
-    *::-webkit-scrollbar {
-      display: none;
-      scrollbar-width: none;
-    }
-      
+    
     /* Header */
     .header {
       display: flex;
@@ -244,10 +243,12 @@ HTML_TEMPLATE = """
       margin-top: 0.5rem;
       font-size: 0.8rem;
     }
-    code {
-      width: inherit;
+    pre code {
       display: block;
-      overflow: auto;
+      overflow-x: auto;
+      padding: 0.5rem;
+      background: #1e1e1e;
+      border-radius: 1rem;
     }
     
     /* Main Section */
@@ -256,6 +257,7 @@ HTML_TEMPLATE = """
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      max-height:calc(100vh - 7.5rem);
     }
     .chat-history {
       flex: 1;
@@ -352,6 +354,21 @@ HTML_TEMPLATE = """
     </div>
   </div>
   <script>
+    // Function to render markdown using Marked
+    function renderMarkdown(text) {
+      if(window.marked) {
+        return marked.parse(text);
+      }
+      return text;
+    }
+    
+    // Function to re-apply syntax highlighting using Highlight.js
+    function highlightCode() {
+      document.querySelectorAll('pre code').forEach((block) => {
+        hljs.highlightElement(block);
+      });
+    }
+    
     // Global variable for streaming mode
     let streamingMode = false;
     function toggleStreaming() {
@@ -382,12 +399,13 @@ HTML_TEMPLATE = """
     // Chat History Management
     function appendChat(message) {
       let chatHistory = document.getElementById("chatHistory");
-      chatHistory.innerHTML += "<div>" + message + "</div>";
+      chatHistory.innerHTML += "<div>" + renderMarkdown(message) + "</div>";
       if (saveHistory) {
         let stored = localStorage.getItem("chatHistory") || "";
-        localStorage.setItem("chatHistory", stored + message + "\\n");
+        localStorage.setItem("chatHistory", stored + message + "");
       }
       chatHistory.scrollTop = chatHistory.scrollHeight;
+      highlightCode();
     }
     
     // Global Functions Management
@@ -433,6 +451,7 @@ HTML_TEMPLATE = """
         div.appendChild(label);
         container.appendChild(div);
       });
+      highlightCode();
     }
     renderGlobalFunctions();
     
@@ -464,7 +483,7 @@ HTML_TEMPLATE = """
       appendChat("<b>User:</b> " + chatText);
       
       if (streamingMode) {
-        // Streaming mode: Use fetch with a stream reader.
+        // Use streaming fetch with a stream reader.
         const response = await fetch("/send", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -473,7 +492,6 @@ HTML_TEMPLATE = """
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let result = "";
-        // Create a temporary message element to update live
         let tempMsg = document.createElement("div");
         tempMsg.innerHTML = "<b>Model:</b> ";
         document.getElementById("chatHistory").appendChild(tempMsg);
@@ -482,7 +500,8 @@ HTML_TEMPLATE = """
           if (done) break;
           const chunk = decoder.decode(value, {stream: true});
           result += chunk;
-          tempMsg.innerHTML = "<b>Model:</b> " + result;
+          tempMsg.innerHTML = "<b>Model:</b> " + renderMarkdown(result);
+          highlightCode();
         }
       } else {
         const response = await fetch("/send", {
@@ -491,7 +510,7 @@ HTML_TEMPLATE = """
           body: JSON.stringify(params)
         });
         const data = await response.json();
-        appendChat("<b>Model:</b> " + data.response);
+        appendChat("<b>Model:</b> " + renderMarkdown(data.response));
       }
       document.getElementById("chatInput").value = "";
       document.getElementById("functionInput").value = "";
