@@ -1,4 +1,4 @@
-### A simple self contained frontend for evaluating gemma3 capabilities
+# A simple self contained frontend for evaluating gemma3 capabilities
 
 - Function calling
 - Webcam frame acquisition and inclusion in prompt
@@ -7,7 +7,7 @@
 python3 app.py
 ```
 
-## example function to test function calling (chunk mode)
+### example function to test function calling (chunk mode)
 ```bash
 def get_ip_location(ip: str = None) -> dict:
     """
