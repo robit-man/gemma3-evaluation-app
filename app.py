@@ -158,7 +158,12 @@ HTML_TEMPLATE = """
     textarea { box-sizing: border-box; }
     /* Utility classes */
     .br-1 { border-radius: 1rem; }
-    
+
+    *::-webkit-scrollbar {
+      display: none;
+      scrollbar-width: none;
+    }
+      
     /* Header */
     .header {
       display: flex;
