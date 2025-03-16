@@ -2,7 +2,7 @@
 
 - Function calling
 - Webcam frame acquisition and inclusion in prompt
-- Single command deployment using
+- Single command automatic venv setup and deployment using
 ```bash
 python3 app.py
 ```
