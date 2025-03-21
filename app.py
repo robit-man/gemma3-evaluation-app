@@ -11,7 +11,7 @@ if sys.prefix == sys.base_prefix:
         subprocess.check_call([sys.executable, "-m", "venv", venv_dir])
     pip_executable = os.path.join(venv_dir, "bin", "pip") if os.name != "nt" else os.path.join(venv_dir, "Scripts", "pip.exe")
     print("Installing dependencies...")
-    subprocess.check_call([pip_executable, "install", "flask", "ollama", "requests"])
+    subprocess.check_call([pip_executable, "install", "flask", "ollama", "requests", "selenium", "chromedriver-autoinstaller"])
     python_executable = os.path.join(venv_dir, "bin", "python") if os.name != "nt" else os.path.join(venv_dir, "Scripts", "python.exe")
     print("Restarting script in virtual environment...")
     subprocess.check_call([python_executable] + sys.argv)
@@ -25,6 +25,7 @@ import base64
 import threading
 import re
 import io
+import importlib.util
 from contextlib import redirect_stdout
 from ollama import chat  # Ollama Python library for interfacing with models
 
@@ -70,26 +71,124 @@ def extract_think(text):
         return text[start + len(start_tag):end].strip()
     return text.strip()
 
-# --- Updated Tool Call Extraction Helper ---
+# --- Install Missing Imports Helper ---
+def install_missing_imports(code):
+    """
+    Scan the provided code for import statements and install missing packages.
+    """
+    lines = code.splitlines()
+    for line in lines:
+        line = line.strip()
+        if line.startswith("import "):
+            parts = line.split()
+            if len(parts) >= 2:
+                module = parts[1].split('.')[0]
+                if not importlib.util.find_spec(module):
+                    try:
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", module])
+                    except Exception as e:
+                        print(f"Error installing {module}: {e}")
+        elif line.startswith("from "):
+            parts = line.split()
+            if len(parts) >= 2:
+                module = parts[1].split('.')[0]
+                if not importlib.util.find_spec(module):
+                    try:
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", module])
+                    except Exception as e:
+                        print(f"Error installing {module}: {e}")
+
+# --- Updated Tool Call Extraction Helper with Iterative Error Handling ---
 def extract_tool_call(text):
     """
     Extracts a function call block (wrapped in either ```tool_code or ```python)
-    from the text, executes it using exec(), and returns the output wrapped in
+    from the text, installs missing imports if needed, and attempts to execute the code
+    iteratively until a result is produced that does not include an error.
+    The function builds an iteration log and returns the final output wrapped in
     <pre><code class="hljs">...</code></pre> for syntax highlighting.
     """
     pattern = r"```(?:tool_code|python)\s*(.*?)\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
         code = match.group(1).strip()
-        f = io.StringIO()
-        try:
-            with redirect_stdout(f):
-                exec(code, globals())
-            output = f.getvalue()
-            return f"<pre><code class='hljs'>{output}</code></pre>"
-        except Exception as e:
-            return f"<pre><code class='hljs'>Error during execution: {str(e)}</code></pre>"
+        install_missing_imports(code)
+        iteration_log = ""
+        attempts = 0
+        max_attempts = 3
+        output = ""
+        while attempts < max_attempts:
+            attempts += 1
+            iteration_log += f"Iteration {attempts}: Executing code...\n"
+            f = io.StringIO()
+            try:
+                with redirect_stdout(f):
+                    exec(code, globals())
+                output = f.getvalue()
+                if "Error" in output or output.strip() == "":
+                    iteration_log += f"Iteration {attempts} produced an error or empty output.\n"
+                else:
+                    iteration_log += f"Iteration {attempts} successful.\n"
+                    break
+            except Exception as e:
+                iteration_log += f"Iteration {attempts} raised an exception: {str(e)}\n"
+                output = f"Error: {str(e)}"
+        final_message = iteration_log + "\nFinal Output:\n" + output
+        return f"<pre><code class='hljs'>{final_message}</code></pre>"
     return None
+
+# --- New Function: Web Search Using Chrome ---
+def search_web(query: str) -> str:
+    """
+    Open a Chrome browser instance (GUI mode) to perform a Google search for the given query.
+    Iterates over the top 3 search results, extracts page text, and returns the integrated content.
+    
+    Requires Selenium and chromedriver-autoinstaller to be installed.
+    """
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        import json
+        import chromedriver_autoinstaller
+        
+        # Automatically install/update chromedriver
+        chromedriver_autoinstaller.install()
+        
+        options = Options()
+        # For GUI mode, comment out the headless option.
+        # options.add_argument("--headless")
+        options.add_argument("--disable-gpu")
+        
+        driver = webdriver.Chrome(options=options)
+        driver.get("https://www.google.com")
+        
+        # Wait and enter the query
+        search_box = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "q")))
+        search_box.clear()
+        search_box.send_keys(query)
+        search_box.submit()
+        
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "search")))
+        results = driver.find_elements(By.CSS_SELECTOR, "div.g")
+        content = ""
+        for result in results[:3]:
+            try:
+                link = result.find_element(By.TAG_NAME, "a")
+                url = link.get_attribute("href")
+                driver.get(url)
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                page_content = driver.find_element(By.TAG_NAME, "body").text
+                content += f"\n---\n{page_content}\n---\n"
+                driver.back()
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "search")))
+            except Exception as e:
+                continue
+        driver.quit()
+        return content
+    except Exception as e:
+        return f"Error during web search: {str(e)}"
 
 # --- Example Function: IP Location Checker ---
 def get_ip_location(ip: str = None) -> dict:
@@ -249,6 +348,7 @@ HTML_TEMPLATE = """
       padding: 0.5rem;
       background: #1e1e1e;
       border-radius: 1rem;
+      max-width:100%;
     }
     
     /* Main Section */
@@ -257,7 +357,7 @@ HTML_TEMPLATE = """
       display: flex;
       flex-direction: column;
       gap: 1rem;
-      max-height:calc(100vh - 7.5rem);
+      max-height: calc(100vh - 7.5rem);
     }
     .chat-history {
       flex: 1;
@@ -316,7 +416,8 @@ HTML_TEMPLATE = """
       <button onclick="toggleStorage()">Toggle Save History</button>
       <button onclick="clearHistory()">Clear History</button>
       <button onclick="downloadHistory()">Download History</button>
-      <button id="toggleStreamBtn" onclick="toggleStreaming()">Streaming: OFF</button>
+      <button id="toggleStreamBtn" onclick="toggleStreaming()">Streaming: ON</button>
+      <button onclick="toggleCameraStream()">Toggle Video</button>
     </div>
     <h2 class="doto-custom">Gemma3:12b Chat Interface</h2>
   </div>
@@ -328,7 +429,7 @@ HTML_TEMPLATE = """
       <label>Temperature:</label>
       <input type="number" id="temperature" value="0.7" step="0.1" min="0" max="1">
       <label>Max Tokens:</label>
-      <input type="number" id="max_tokens" value="1024">
+      <input type="number" id="max_tokens" value="128000">
       <div class="global-functions">
         <h3>Global Functions</h3>
         <textarea id="globalFunctionInput" placeholder="Enter global function code"></textarea>
@@ -346,7 +447,7 @@ HTML_TEMPLATE = """
           <textarea id="functionInput" placeholder="Enter function code (optional)"></textarea>
         </div>
         <div class="flex-col">
-          <video id="webcamVideo" autoplay muted></video>
+          <video id="webcamVideo" muted></video>
           <button onclick="captureWebcam()">Capture Frame</button>
         </div>
       </div>
@@ -354,10 +455,19 @@ HTML_TEMPLATE = """
     </div>
   </div>
   <script>
-    // Function to render markdown using Marked
+    // Load persistent settings from localStorage (defaults: streaming true, saveHistory true)
+    let streamingMode = JSON.parse(localStorage.getItem("streamingMode") || "true");
+    let saveHistory = JSON.parse(localStorage.getItem("saveHistory") || "true");
+    let captureLive = JSON.parse(localStorage.getItem("captureLive") || "true");
+    document.getElementById("toggleStreamBtn").innerText = streamingMode ? "Streaming: ON" : "Streaming: OFF";
+    
+    // Function to render markdown using Marked and post-process code block classes.
     function renderMarkdown(text) {
       if(window.marked) {
-        return marked.parse(text);
+        let html = marked.parse(text);
+        // Replace language identifiers "tool_code" with "python"
+        html = html.replace(/language-tool_code/g, "language-python");
+        return html;
       }
       return text;
     }
@@ -369,17 +479,21 @@ HTML_TEMPLATE = """
       });
     }
     
-    // Global variable for streaming mode
-    let streamingMode = false;
     function toggleStreaming() {
       streamingMode = !streamingMode;
+      localStorage.setItem("streamingMode", JSON.stringify(streamingMode));
       document.getElementById("toggleStreamBtn").innerText = streamingMode ? "Streaming: ON" : "Streaming: OFF";
     }
-    
-    // Persistent Storage Controls
-    let saveHistory = false;
+
+    function toggleCameraStream() {
+      captureLive = !captureLive;
+      localStorage.setItem("captureLive", JSON.stringify(captureLive));
+      alert("Video Capture is now " + (captureLive ? "ON" : "OFF"));
+    }
+
     function toggleStorage() {
       saveHistory = !saveHistory;
+      localStorage.setItem("saveHistory", JSON.stringify(saveHistory));
       alert("Save History is now " + (saveHistory ? "ON" : "OFF"));
     }
     function clearHistory() {
@@ -483,7 +597,6 @@ HTML_TEMPLATE = """
       appendChat("<b>User:</b> " + chatText);
       
       if (streamingMode) {
-        // Use streaming fetch with a stream reader.
         const response = await fetch("/send", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -517,26 +630,59 @@ HTML_TEMPLATE = """
       window.capturedImage = "";
     }
     
-    // Webcam Capture
-    function captureWebcam() {
-      let video = document.getElementById("webcamVideo");
-      let canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      let ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      window.capturedImage = canvas.toDataURL("image/jpeg");
-      alert("Webcam frame captured!");
-    }
-    
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ video: true })
-      .then(function(stream) {
-        let video = document.getElementById("webcamVideo");
-        video.srcObject = stream;
-        video.play();
-      });
-    }
+   function captureWebcam() {
+     if (!captureLive) {
+       alert("Video Capture is OFF.  Cannot capture a frame.");
+       return;
+     }
+
+     let video = document.getElementById("webcamVideo");
+     let canvas = document.createElement("canvas");
+     canvas.width = video.videoWidth;
+     canvas.height = video.videoHeight;
+     let ctx = canvas.getContext("2d");
+     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+     window.capturedImage = canvas.toDataURL("image/jpeg");
+     alert("Webcam frame captured!");
+   }
+
+   function startCameraStream() {
+     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+       navigator.mediaDevices.getUserMedia({ video: true })
+         .then(function(stream) {
+           let video = document.getElementById("webcamVideo");
+           video.srcObject = stream;
+           video.play();
+          })
+         .catch(function(error) {
+           console.error("Error accessing webcam:", error);
+           alert("Error accessing webcam.  Please check permissions and try again.");
+         });
+     } else {
+       alert("Webcam functionality not supported in your browser.");
+     }
+   }
+
+   function stopCameraStream() {
+     let video = document.getElementById("webcamVideo");
+     if (video.srcObject) {
+       video.srcObject.getTracks().forEach(track => track.stop());
+       video.srcObject = null;
+     }
+   }
+
+
+   function toggleCameraStream() {
+     captureLive = !captureLive;
+     localStorage.setItem("captureLive", JSON.stringify(captureLive));
+     alert("Video Capture is now " + (captureLive ? "ON" : "OFF"));
+
+     if (captureLive) {
+       startCameraStream();
+     } else {
+       stopCameraStream();
+     }
+   }
   </script>
 </body>
 </html>
